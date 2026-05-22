@@ -165,11 +165,30 @@ function URLEncode(value) {
 
 // =============================================================================
 // IMPORTHELLOASSO — GET HelloAsso REST endpoint, flatten JSON to 2D for Sheets.
-// Must be called from menu (not as @customfunction) because the auth chain
-// needs PropertiesService / CacheService / LockService — all blocked in the
-// custom-function sandbox.
+// Utilisable de deux manières :
+//   1. =IMPORTHELLOASSO(url, query, options) directement dans une cellule
+//      (custom function — refresh auto par Sheets).
+//   2. Menu "Import HelloAsso" → prompt URL → écrit dans feuille active
+//      (importHelloAsso ci-dessous).
 // JSON-flattening helpers live in json-to-2d.js.
+//
+// Restrictions custom function : pas de LockService (cf. getToken_),
+// PropertiesService.getScriptProperties() et CacheService OK.
 // =============================================================================
+
+/**
+ * GET a HelloAsso endpoint and return the JSON flattened to a 2D array.
+ *
+ * @param {string} url     Full HelloAsso URL or relative path (starting with /).
+ * @param {string} query   Comma-separated XPath-like prefixes to include.
+ * @param {string} options Comma-separated options: noInherit, noTruncate, rawHeaders, noHeaders, debugLocation.
+ * @return {Array<Array<*>>} 2D array, headers in row 0 unless noHeaders.
+ * @customfunction
+ */
+function IMPORTHELLOASSO(url, query, options) {
+  const object = helloAssoFetch_(url);
+  return parseJSONObject_(object, query, options, includeXPath_, defaultTransform_);
+}
 
 function importHelloAsso_toSheet_(url, query, options) {
   const object = helloAssoFetch_(url);

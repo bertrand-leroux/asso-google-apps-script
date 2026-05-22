@@ -196,3 +196,34 @@ function importHelloAsso() {
   if (!url) return;
   importHelloAsso_toSheet_(url);
 }
+
+// =============================================================================
+// Debug helpers — zero-arg wrappers pour Run/Debug depuis l'éditeur Apps Script.
+// Éditer les paramètres hardcodés en tête de chaque fonction, sélectionner la
+// fonction dans la dropdown de l'éditeur, cliquer Run (▶) ou Debug (🐞).
+// Poser des breakpoints dans getToken_ / helloAssoFetch_ / parseJSONObject_
+// pour inspecter step-by-step. Sortie via Logger.log → "Journal d'exécution".
+//
+// Pas de suffix `_` : ces fonctions sont volontairement listées dans la dropdown
+// "Select function" de l'éditeur (cf. convention CLAUDE.md / README).
+// =============================================================================
+
+function debugToken() {
+  Logger.log(getToken_());
+}
+
+function debugHelloAssoFetch() {
+  const path = '/organizations/<your-asso-slug>/orders';
+  const json = helloAssoFetch_(path);
+  Logger.log(JSON.stringify(json, null, 2));
+}
+
+function debugImportHelloAsso() {
+  const url = '/organizations/<your-asso-slug>/orders';
+  const query = '/data/payer';
+  const options = 'noTruncate';
+
+  const object = helloAssoFetch_(url);
+  const rows = parseJSONObject_(object, query, options, includeXPath_, defaultTransform_);
+  Logger.log(JSON.stringify(rows, null, 2));
+}

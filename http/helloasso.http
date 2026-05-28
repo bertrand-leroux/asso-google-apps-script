@@ -1,0 +1,61 @@
+### HelloAsso v5 API — playground
+### Doc: https://api.helloasso.com/v5/swagger/index.html
+### Variables: http-client.env.json (public) + http-client.private.env.json (secrets, gitignoré)
+
+### --- 1. OAuth token (client_credentials) ---
+# @name auth
+POST {{baseUrl}}/oauth2/token
+Content-Type: application/x-www-form-urlencoded
+
+client_id={{clientId}}&client_secret={{clientSecret}}&grant_type=client_credentials
+
+> {%
+client.global.set("token", response.body.access_token);
+%}
+
+### --- 2. Form public model : définitions des questions custom ---
+### Les questions = tiers[].customFields[] (label, type, isRequired, values pour ChoiceList)
+###                  + extraOptions[].customFields[]
+GET {{baseUrl}}/v5/organizations/{{orgSlug}}/forms/{{formType}}/{{formSlug}}/public
+Authorization: Bearer {{token}}
+
+### --- 3. Items du formulaire AVEC réponses customFields ---
+### withDetails=true OBLIGATOIRE sinon customFields absent de la réponse
+### Réponses dans items[].customFields[] = {id, name, type, answer}
+GET {{baseUrl}}/v5/organizations/{{orgSlug}}/forms/{{formType}}/{{formSlug}}/items
+    ?withDetails=true
+    &pageSize=100
+    &pageIndex=1
+Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI5MTM4NmQ5MDY5OGI0YjQ4NDI4ZTA4ZGViYjI3ZTkwMCIsInVycyI6Ik9yZ2FuaXphdGlvbkFkbWluIiwiY3BzIjpbIkFjY2Vzc1B1YmxpY0RhdGEiLCJBY2Nlc3NUcmFuc2FjdGlvbnMiLCJDaGVja291dCIsIlJlZnVuZE1hbmFnZW1lbnQiXSwibmJmIjoxNzc5ODkxNzc2LCJleHAiOjE3Nzk4OTM1NzYsImlzcyI6Imh0dHBzOi8vYXBpLmhlbGxvYXNzby5jb20iLCJhdWQiOiJmYjA0ODk0MGQwYzE0ZmVlYTZmZWEwMWM5MWI0N2M0MSJ9.ZZcVoH6EodimxKLA3Y9oRljEhpjOxMkvCnkFPvWPd9tbPAbzZyarm5HpepBOM8fq92-sdkGm--lGPmvt1YS3C2OyyaRpKIRYTLz5ZbFR0wj1sNR7b2pbC2yXqcErD_XHZAF7Ys97xkLf75dGkbws17hmmPVdAUUHHG-EXov3_cwISmyn9sRVMpBhh1xW4bc-_nOdhF6hPZz9OoQajSXcPZ7BjdUjxQ0PQuw-V5YGssyFv6d0Rn35JnrYYKJLsEXTcUZ_ciYDYV6HHhh2OZr39_aCOcjmZfCQlUugNY927pfDOzGNXi1wljoAUOttpZHgUIPCNbxos14WywApzGoSPQ
+
+### --- 4. Page suivante (itérer pageIndex jusqu'à pagination.totalPages) ---
+GET {{baseUrl}}/v5/organizations/{{orgSlug}}/forms/{{formType}}/{{formSlug}}/items
+    ?withDetails=true
+    &pageSize=100
+    &pageIndex=2
+Authorization: Bearer {{token}}
+
+### --- 5. Lister tous les formulaires de l'asso (trouver formType/slug) ---
+GET {{baseUrl}}/v5/organizations/{{orgSlug}}/forms
+    ?pageSize=100
+    &states=Public
+    &states=Private
+    &states=Draft
+Authorization: Bearer {{token}}
+
+### --- 6. Orders (commandes) ---
+GET {{baseUrl}}/v5/organizations/{{orgSlug}}/forms/{{formType}}/{{formSlug}}/orders
+    ?withDetails=true
+    &pageSize=100
+    &pageIndex=1
+Authorization: Bearer {{token}}
+
+### --- 7. Payments (transactions) ---
+GET {{baseUrl}}/v5/organizations/{{orgSlug}}/forms/{{formType}}/{{formSlug}}/payments
+    ?pageSize=100
+    &pageIndex=1
+Authorization: Bearer {{token}}
+
+### --- 8. Stats du formulaire ---
+GET {{baseUrl}}/v5/organizations/{{orgSlug}}/forms/{{formType}}/{{formSlug}}/stats
+Authorization: Bearer {{token}}

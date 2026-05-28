@@ -14,7 +14,7 @@ function createAllUnexistingContacts() {
   const sheet = getSheet();
   const data = sheet.getDataRange().getValues();
   const lines = eligibleLines(sheet, data, line =>
-    getByName('Statut', line, data) !== "Inscrit sur liste d'attente"
+    getByName('Statut', line, data) === "Inscrit"
     && getByName(CONTACT_SCHEMA.trackingColumn, line, data) === ''
   );
   const { created, skipped, failed, errors } = createContactsForLines_(sheet, data, lines, CONTACT_SCHEMA);

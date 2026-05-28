@@ -5,49 +5,62 @@
 
 const HELLOASSO_API_BASE = 'https://api.helloasso.com/v5';
 const HELLOASSO_TOKEN_URL = 'https://api.helloasso.com/oauth2/token';
-const HELLOASSO_TOKEN_CACHE_KEY = 'helloasso_access_token';
-const HELLOASSO_TOKEN_TTL_SAFETY = 60; // refresh 60s before expiry
+const HELLOASSO_TOKEN_PROP_KEY = 'helloasso_token_v2';
+const HELLOASSO_TOKEN_TTL_SAFETY_MS = 60 * 1000; // refresh 60s before expiry
 
 // -----------------------------------------------------------------------------
-// Token (cached)
+// Token (persisted in ScriptProperties — durable, survit éviction CacheService)
+//
+// Pas de LockService : interdit en contexte custom function (=IMPORTHELLOASSO
+// en cellule). Race condition acceptée : si plusieurs appels parallèles ratent
+// la propriété simultanément, chacun POSTe /oauth2/token et le dernier write
+// gagne. ScriptProperties = durable → cache miss bien plus rare que
+// CacheService → réduit drastiquement les stampedes (Cloudflare 1015).
 // -----------------------------------------------------------------------------
 
 function getToken_() {
-  const cache = CacheService.getScriptCache();
-  const cached = cache.get(HELLOASSO_TOKEN_CACHE_KEY);
-  if (cached) return 'Bearer ' + cached;
-
-  // Pas de LockService ici : interdit en contexte custom function
-  // (=IMPORTHELLOASSO en cellule) — lève une exception qui casse l'appel.
-  // Race condition acceptée : si plusieurs appels parallèles ratent le cache
-  // simultanément, chacun POSTe /oauth2/token et le dernier write gagne dans
-  // le cache. Conséquence bénigne (quelques appels OAuth gaspillés, pas de
-  // corruption). Rate-limit HelloAsso assez généreux pour absorber.
-  const res = UrlFetchApp.fetch(HELLOASSO_TOKEN_URL, {
-    method: 'post',
-    payload: {
-      client_id: HELLOASSO_CLIENT_ID,
-      client_secret: HELLOASSO_CLIENT_SECRET,
-      grant_type: 'client_credentials',
-    },
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    muteHttpExceptions: true,
-  });
-
-  const code = res.getResponseCode();
-  const body = res.getContentText();
-  if (code < 200 || code >= 300) {
-    throw new Error(`HelloAsso token request failed (${code}): ${body}`);
+  const props = PropertiesService.getScriptProperties();
+  const raw = props.getProperty(HELLOASSO_TOKEN_PROP_KEY);
+  if (raw) {
+    try {
+      const { token, expiresAt } = JSON.parse(raw);
+      if (token && expiresAt && Date.now() < expiresAt) return 'Bearer ' + token;
+    } catch (_) { /* propriété corrompue → re-fetch */ }
   }
 
-  const data = JSON.parse(body);
-  const ttl = Math.max(60, (data.expires_in || 1800) - HELLOASSO_TOKEN_TTL_SAFETY);
-  cache.put(HELLOASSO_TOKEN_CACHE_KEY, data.access_token, Math.min(ttl, 21600));
-  return 'Bearer ' + data.access_token;
+  for (let attempt = 0; attempt <= HELLOASSO_MAX_RETRIES; attempt++) {
+    const res = UrlFetchApp.fetch(HELLOASSO_TOKEN_URL, {
+      method: 'post',
+      payload: {
+        client_id: HELLOASSO_CLIENT_ID,
+        client_secret: HELLOASSO_CLIENT_SECRET,
+        grant_type: 'client_credentials',
+      },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      muteHttpExceptions: true,
+    });
+
+    const code = res.getResponseCode();
+    const body = res.getContentText();
+
+    if ((code === 429 || code >= 500) && attempt < HELLOASSO_MAX_RETRIES) {
+      Utilities.sleep(HELLOASSO_BACKOFF_BASE_MS * Math.pow(2, attempt));
+      continue;
+    }
+    if (code < 200 || code >= 300) {
+      throw new Error(`HelloAsso token request failed (${code}): ${body}`);
+    }
+
+    const data = JSON.parse(body);
+    const ttlMs = Math.max(60000, (data.expires_in || 1800) * 1000 - HELLOASSO_TOKEN_TTL_SAFETY_MS);
+    const expiresAt = Date.now() + ttlMs;
+    props.setProperty(HELLOASSO_TOKEN_PROP_KEY, JSON.stringify({ token: data.access_token, expiresAt }));
+    return 'Bearer ' + data.access_token;
+  }
 }
 
 function invalidateToken_() {
-  CacheService.getScriptCache().remove(HELLOASSO_TOKEN_CACHE_KEY);
+  PropertiesService.getScriptProperties().deleteProperty(HELLOASSO_TOKEN_PROP_KEY);
 }
 
 // -----------------------------------------------------------------------------

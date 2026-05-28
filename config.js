@@ -24,6 +24,8 @@ const RESPONSABLE = 'Prénom NOM';
 const FROM_NAME = SECTION_NAME;
 const HELLOASSO_ASSO_SLUG = 'amicale-laique-de-vertou';
 const HELLOASSO_CAMPAIGN_SLUG = 'adhesion-ecole-du-sport-ou-roller-2026-2027';
+const HELLOASSO_CLIENT_ID = 'ton_client_id_ici';
+const HELLOASSO_CLIENT_SECRET = 'ton_client_secret_ici';
 
 const SECTION_POSTAL_ADDRESS = `${ASSO_SHORT} ${SECTION_NAME}, chez ${RESPONSABLE}
 Numéro et nom de rue

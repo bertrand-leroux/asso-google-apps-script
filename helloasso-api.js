@@ -9,37 +9,6 @@ const HELLOASSO_TOKEN_CACHE_KEY = 'helloasso_access_token';
 const HELLOASSO_TOKEN_TTL_SAFETY = 60; // refresh 60s before expiry
 
 // -----------------------------------------------------------------------------
-// Credentials — stored in ScriptProperties, NEVER hardcoded
-// Setup once from the script editor:
-//   setHelloAssoCredentials('your_client_id', 'your_client_secret');
-// Then delete the call line.
-// -----------------------------------------------------------------------------
-
-let HELLOASSO_CREDENTIALS_CACHE_ = null;
-
-function setHelloAssoCredentials(clientId, clientSecret) {
-  PropertiesService.getScriptProperties().setProperties({
-    HELLOASSO_CLIENT_ID: clientId,
-    HELLOASSO_CLIENT_SECRET: clientSecret,
-  });
-  HELLOASSO_CREDENTIALS_CACHE_ = { clientId, clientSecret };
-}
-
-function getHelloAssoCredentials_() {
-  if (HELLOASSO_CREDENTIALS_CACHE_) return HELLOASSO_CREDENTIALS_CACHE_;
-  const props = PropertiesService.getScriptProperties();
-  const clientId = props.getProperty('HELLOASSO_CLIENT_ID');
-  const clientSecret = props.getProperty('HELLOASSO_CLIENT_SECRET');
-  if (!clientId || !clientSecret) {
-    throw new Error(
-      'HelloAsso credentials missing. Run setHelloAssoCredentials(id, secret) once.'
-    );
-  }
-  HELLOASSO_CREDENTIALS_CACHE_ = { clientId, clientSecret };
-  return HELLOASSO_CREDENTIALS_CACHE_;
-}
-
-// -----------------------------------------------------------------------------
 // Token (cached)
 // -----------------------------------------------------------------------------
 
@@ -54,12 +23,11 @@ function getToken_() {
   // simultanément, chacun POSTe /oauth2/token et le dernier write gagne dans
   // le cache. Conséquence bénigne (quelques appels OAuth gaspillés, pas de
   // corruption). Rate-limit HelloAsso assez généreux pour absorber.
-  const { clientId, clientSecret } = getHelloAssoCredentials_();
   const res = UrlFetchApp.fetch(HELLOASSO_TOKEN_URL, {
     method: 'post',
     payload: {
-      client_id: clientId,
-      client_secret: clientSecret,
+      client_id: HELLOASSO_CLIENT_ID,
+      client_secret: HELLOASSO_CLIENT_SECRET,
       grant_type: 'client_credentials',
     },
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -138,19 +106,33 @@ function buildUrl_(pathOrUrl, query) {
 }
 
 // -----------------------------------------------------------------------------
-// Pagination helper — HelloAsso uses pageIndex / pageSize, total in `pagination`
+// Pagination helper — deux modes selon endpoint :
+//   - pageIndex/pageSize : pagination[totalPages] > 0 (endpoints classiques)
+//   - continuationToken  : totalPages=-1 (ex: /items?withDetails=true), token
+//     opaque renvoyé dans pagination.continuationToken, à repasser en query.
 // -----------------------------------------------------------------------------
 
 function helloAssoFetchAll_(path, query = {}, pageSize = 100) {
   const out = [];
   let pageIndex = 1;
+  let continuationToken;
   while (true) {
-    const res = helloAssoFetch_(path, { query: { ...query, pageIndex, pageSize } });
+    const q = { ...query, pageSize };
+    if (continuationToken) q.continuationToken = continuationToken;
+    else q.pageIndex = pageIndex;
+
+    const res = helloAssoFetch_(path, { query: q });
     const items = res.data || [];
     out.push(...items);
-    const totalPages = res.pagination && res.pagination.totalPages;
-    if (totalPages ? pageIndex >= totalPages : items.length < pageSize) break;
-    pageIndex++;
+
+    const pag = res.pagination || {};
+    if (pag.totalPages && pag.totalPages > 0) {
+      if (pageIndex >= pag.totalPages) break;
+      pageIndex++;
+    } else {
+      if (items.length < pageSize || !pag.continuationToken) break;
+      continuationToken = pag.continuationToken;
+    }
   }
   return out;
 }
@@ -188,6 +170,51 @@ function URLEncode(value) {
 function IMPORTHELLOASSO(url, query, options) {
   const object = helloAssoFetch_(url);
   return parseJSONObject_(object, query, options, includeXPath_, defaultTransform_);
+}
+
+/**
+ * GET tous les items du formulaire Membership de la campagne courante,
+ * pagination incluse, et retourne un 2D array pour Sheets.
+ *
+ * Slug + asso lus depuis config.js (HELLOASSO_ASSO_SLUG / HELLOASSO_CAMPAIGN_SLUG).
+ * Pour changer de saison/campagne : éditer HELLOASSO_CAMPAIGN_SLUG dans config.js.
+ *
+ * @return {Array<Array<*>>} 2D array, headers en row 0.
+ * @customfunction
+ */
+function IMPORTHELLOITEMS() {
+  const path = `/organizations/${HELLOASSO_ASSO_SLUG}/forms/Membership/${HELLOASSO_CAMPAIGN_SLUG}/items`;
+  const items = helloAssoFetchAll_(path);
+  return parseJSONObject_(items, undefined, undefined, includeXPath_, defaultTransform_);
+}
+
+/**
+ * Vue résumée des items Membership : 7 colonnes sélectionnées.
+ * customFields lookup par nom (pas index) — résiste aux changements d'ordre.
+ *
+ * @return {Array<Array<*>>} 2D array, headers en row 0.
+ * @customfunction
+ */
+function IMPORTHELLOITEMS_SUMMARY() {
+  const path = `/organizations/${HELLOASSO_ASSO_SLUG}/forms/Membership/${HELLOASSO_CAMPAIGN_SLUG}/items`;
+  const items = helloAssoFetchAll_(path, { withDetails: true });
+
+  const header = ['Date', 'Email payeur', 'Montant (€)', "Nom de l'enfant", "Prénom de l'enfant", 'Prénom', 'Nom'];
+  const cf = (item, name) => {
+    const f = (item.customFields || []).find(c => c.name === name);
+    return f ? f.answer : '';
+  };
+  const fmtDate = s => s ? s.slice(0, 10) + ' ' + s.slice(11, 19) : '';
+  const rows = items.map(it => [
+    fmtDate(it.order && it.order.date),
+    (it.payer && it.payer.email) || '',
+    (it.amount || 0) / 100,
+    cf(it, "Nom de l'enfant"),
+    cf(it, "Prénom de l'enfant"),
+    (it.user && it.user.firstName) || '',
+    (it.user && it.user.lastName) || '',
+  ]);
+  return [header, ...rows];
 }
 
 function menuImportHelloAsso_toSheet_(url, query, options) {
@@ -237,4 +264,14 @@ function debugImportHelloAsso() {
   const object = helloAssoFetch_(url);
   const rows = parseJSONObject_(object, query, options, includeXPath_, defaultTransform_);
   Logger.log(JSON.stringify(rows, null, 2));
+}
+
+function debugImportHelloItemsSummary() {
+  const t0 = Date.now();
+  const path = `/organizations/${HELLOASSO_ASSO_SLUG}/forms/Membership/${HELLOASSO_CAMPAIGN_SLUG}/items`;
+  const items = helloAssoFetchAll_(path, { withDetails: true });
+  const t1 = Date.now();
+  Logger.log(`Fetched ${items.length} items in ${t1 - t0}ms`);
+  Logger.log(`First item keys: ${items[0] ? Object.keys(items[0]).join(', ') : '(none)'}`);
+  Logger.log(JSON.stringify(items.slice(0, 2), null, 2));
 }

@@ -1,4 +1,4 @@
-# ALV — Apps Script inscriptions section
+# Google Apps Scripts de gestion des inscriptions pour une association
 
 Google Apps Script générique pour le tableur d'inscriptions d'une section d'une association, alimenté par un Google Form. Réutilisable tel quel par n'importe quelle section : tous les libellés section-specific sont paramétrés dans `config.js` (`SECTION_NAME`, `RESPONSABLE`, `SECTION_POSTAL_ADDRESS`, `HELLOASSO_URL`, `CONTACT_LABELS`, …).
 

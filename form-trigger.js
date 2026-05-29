@@ -69,10 +69,18 @@ Toutes vos réponses :
 ${allValues}
 `;
 
+  const attachments = [];
+  try {
+    attachments.push(DriveApp.getFileById(REGLEMENT_DOC_ID).getAs(MimeType.PDF));
+  } catch (err) {
+    Logger.log(`Règlement PDF introuvable (id=${REGLEMENT_DOC_ID}): ${err}. Mail envoyé sans PJ.`);
+  }
+
   sendMail({
     to: email,
     cc: email2 || undefined,
     subject: `Demande d'inscription - ${nomEnfant} ${prenomEnfant}`,
     body,
+    attachments,
   });
 }

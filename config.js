@@ -4,6 +4,7 @@
 
 const GOOGLE_SHEET_ID = 'xxx';
 const INSCRIPTION_FORM_ID = '<GOOGLE_FORM_ID>';
+const REGLEMENT_DOC_ID = '<REGLEMENT_DOC_ID>';
 const SHEET_NAME = 'Demandes';
 const CONTACTS_SHEET_NAME = 'Google Contacts';
 const TRACKING_SHEET_ID = 'XXX';

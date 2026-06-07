@@ -18,6 +18,11 @@ const CONTACT_URL_PREFIX = 'https://contacts.google.com/person/';
 const CONTACT_PERSON_FIELDS = 'names,emailAddresses,phoneNumbers,addresses,birthdays,memberships,metadata';
 const CONTACT_BATCH_LIMIT = 200;
 
+// searchContacts exige un warmup (requête à query vide) pour rafraîchir le cache
+// serveur avant la vraie recherche. On le fait une seule fois par exécution.
+const CONTACT_SEARCH_WARMUP_MS = 3000;
+let _contactSearchWarmed = false;
+
 // -----------------------------------------------------------------------------
 // Schema validation
 // -----------------------------------------------------------------------------
@@ -139,15 +144,104 @@ function buildContactPerson_(line, data, schema, groups) {
 }
 
 // -----------------------------------------------------------------------------
-// URL helpers
+// URL helpers — la colonne tracking n'est plus la source de vérité (les URLs
+// deviennent obsolètes après fusion de doublons), seulement un lien pratique.
 // -----------------------------------------------------------------------------
-
-function contactResourceNameFromUrl_(url) {
-  return 'people/' + url.split('/').pop();
-}
 
 function contactUrlFromResourceName_(resourceName) {
   return CONTACT_URL_PREFIX + resourceName.split('/').pop();
+}
+
+// -----------------------------------------------------------------------------
+// Résolution d'un contact par identité (email + nom), au lieu de l'URL stockée.
+// -----------------------------------------------------------------------------
+
+function normalizeContactKey_(value) {
+  return String(value == null ? '' : value).trim().toLowerCase();
+}
+
+// L'email de recherche = la première colonne email déclarée `required`.
+function lookupEmailSpec_(schema) {
+  const spec = (schema.emails || []).find(e => e.required);
+  if (!spec) {
+    throw new Error('Schema: aucune colonne email "required" pour la recherche de contact.');
+  }
+  return spec;
+}
+
+// Identité composite d'une ligne : email + NOM + Prénom (normalisés). Distingue
+// les fratries qui partagent le même email parent. Renvoie null si email vide.
+function contactIdentityForLine_(line, data, schema) {
+  const email = normalizeContactKey_(getByName(lookupEmailSpec_(schema).col, line, data));
+  if (!email) return null;
+  const familyName = normalizeContactKey_(getByName(schema.name.familyName, line, data));
+  const givenName = normalizeContactKey_(getByName(schema.name.givenName, line, data));
+  return { email, familyName, givenName, key: `${email}|${familyName}|${givenName}` };
+}
+
+// Toutes les clés d'identité d'un person (combinaisons email × nom).
+function personIdentityKeys_(person) {
+  const emails = (person.emailAddresses || []).map(e => normalizeContactKey_(e.value)).filter(Boolean);
+  const names = (person.names || []).map(n => ({
+    familyName: normalizeContactKey_(n.familyName),
+    givenName: normalizeContactKey_(n.givenName),
+  }));
+  const keys = [];
+  emails.forEach(email => names.forEach(n => keys.push(`${email}|${n.familyName}|${n.givenName}`)));
+  return keys;
+}
+
+function personMatchesIdentity_(person, identity) {
+  return personIdentityKeys_(person).indexOf(identity.key) !== -1;
+}
+
+// Warmup unique par exécution (chaque appel de menu = nouvelle exécution Apps Script).
+function warmContactSearchCache_() {
+  if (_contactSearchWarmed) return;
+  People.People.searchContacts({ query: '', readMask: 'emailAddresses', pageSize: 1 });
+  Utilities.sleep(CONTACT_SEARCH_WARMUP_MS);
+  _contactSearchWarmed = true;
+}
+
+// Single-row : cherche par email puis filtre sur l'identité exacte. Renvoie
+// { resourceName, etag, person } (etag live via get) ou null.
+function findContactForLine_(line, data, schema) {
+  const identity = contactIdentityForLine_(line, data, schema);
+  if (!identity) return null;
+  warmContactSearchCache_();
+  const res = People.People.searchContacts({
+    query: identity.email,
+    readMask: 'names,emailAddresses,metadata',
+    pageSize: 30,
+  });
+  const match = (res.results || [])
+    .map(r => r.person)
+    .find(p => personMatchesIdentity_(p, identity));
+  if (!match) return null;
+  const full = People.People.get(match.resourceName, { personFields: CONTACT_PERSON_FIELDS });
+  return { resourceName: full.resourceName, etag: full.etag, person: full };
+}
+
+// Bulk : un seul parcours paginé des contacts de l'utilisateur → index
+// identité → { resourceName, etag }. Évite N searchContacts (warmup/sleep) et le
+// cache périmé juste après batchCreateContacts.
+function buildContactIndex_() {
+  const index = {};
+  let pageToken;
+  do {
+    const res = People.People.Connections.list('people/me', {
+      personFields: 'names,emailAddresses,metadata',
+      pageSize: 1000,
+      pageToken,
+    });
+    (res.connections || []).forEach(p => {
+      personIdentityKeys_(p).forEach(key => {
+        index[key] = { resourceName: p.resourceName, etag: p.etag };
+      });
+    });
+    pageToken = res.nextPageToken;
+  } while (pageToken);
+  return index;
 }
 
 // -----------------------------------------------------------------------------
@@ -160,16 +254,46 @@ function chunk_(arr, size) {
   return out;
 }
 
+// Met à jour un contact résolu. updatePersonFields ne liste que ce qu'on envoie :
+// lister un champ sans le fournir l'effacerait sur le contact. L'etag peut venir
+// de Connections.list (potentiellement périmé) → refetch + retry une fois si échec.
+function updateResolvedContact_(resourceName, etag, fresh) {
+  const updatePersonFields = Object.keys(fresh).join(',');
+  try {
+    return People.People.updateContact({ etag, ...fresh }, resourceName, { updatePersonFields });
+  } catch (e) {
+    const current = People.People.get(resourceName, { personFields: CONTACT_PERSON_FIELDS });
+    return People.People.updateContact({ etag: current.etag, ...fresh }, resourceName, { updatePersonFields });
+  }
+}
+
+// Upsert en masse : résout chaque ligne par identité (email + nom) via un index
+// construit en une passe. Ligne déjà présente → update (pas de doublon) ; sinon
+// → create groupé. La colonne tracking n'est plus lue, seulement (ré)écrite.
 function createContactsForLines_(sheet, data, lines, schema) {
   validateSchema_(schema, data);
   const groups = ensureContactGroups_(schema);
   const contactCol = getColNumberByName(schema.trackingColumn, data);
+  const index = buildContactIndex_();
 
-  const result = { created: 0, skipped: 0, failed: 0, errors: [] };
-  const queue = [];
+  const result = { created: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
+  const creates = [];
+  const updates = [];
   lines.forEach(line => {
     try {
-      queue.push({ line, contactPerson: buildContactPerson_(line, data, schema, groups) });
+      const identity = contactIdentityForLine_(line, data, schema);
+      if (!identity) {
+        result.skipped++;
+        result.errors.push(`Ligne ${line} skipped: email de recherche vide`);
+        return;
+      }
+      const contactPerson = buildContactPerson_(line, data, schema, groups);
+      const existing = index[identity.key];
+      if (existing) {
+        updates.push({ line, contactPerson, ...existing });
+      } else {
+        creates.push({ line, contactPerson });
+      }
     } catch (e) {
       result.skipped++;
       result.errors.push(`Ligne ${line} skipped: ${e.message}`);
@@ -177,7 +301,7 @@ function createContactsForLines_(sheet, data, lines, schema) {
     }
   });
 
-  chunk_(queue, CONTACT_BATCH_LIMIT).forEach(batch => {
+  chunk_(creates, CONTACT_BATCH_LIMIT).forEach(batch => {
     const contacts = batch.map(({ contactPerson }) => ({ contactPerson }));
     let res;
     try {
@@ -202,6 +326,18 @@ function createContactsForLines_(sheet, data, lines, schema) {
     });
   });
 
+  updates.forEach(({ line, contactPerson, resourceName, etag }) => {
+    try {
+      const updated = updateResolvedContact_(resourceName, etag, contactPerson);
+      sheet.getRange(line, contactCol).setValue(contactUrlFromResourceName_(updated.resourceName));
+      result.updated++;
+    } catch (e) {
+      result.failed++;
+      result.errors.push(`Ligne ${line} (update): ${e.message}`);
+      Logger.log(`Update failure line ${line}: ${e}`);
+    }
+  });
+
   return result;
 }
 
@@ -211,34 +347,37 @@ function createContactsForLines_(sheet, data, lines, schema) {
 
 function syncContactCreate(sheet, line, schema) {
   const data = sheet.getDataRange().getValues();
-  return createContactsForLines_(sheet, data, [line], schema);  // { created, skipped, failed, errors }
+  return createContactsForLines_(sheet, data, [line], schema);  // { created, updated, skipped, failed, errors }
 }
 
 function syncContactUpdate(sheet, line, schema) {
   const data = sheet.getDataRange().getValues();
   validateSchema_(schema, data);
-  const url = getByName(schema.trackingColumn, line, data);
-  if (!url) throw new Error(`Aucun Google Contact sur la ligne ${line}.`);
+
+  const found = findContactForLine_(line, data, schema);
+  if (!found) {
+    const id = contactIdentityForLine_(line, data, schema);
+    const who = id ? `${id.email} (${id.givenName} ${id.familyName})` : `ligne ${line}`;
+    throw new Error(`Aucun contact Google trouvé pour ${who}.`);
+  }
 
   const groups = ensureContactGroups_(schema);
-  const resourceName = contactResourceNameFromUrl_(url);
-  const existing = People.People.get(resourceName, { personFields: CONTACT_PERSON_FIELDS });
   const fresh = buildContactPerson_(line, data, schema, groups);
+  const updated = updateResolvedContact_(found.resourceName, found.etag, fresh);
 
-  // updatePersonFields must list only what we actually send. Listing a field
-  // and omitting it from the body would clear it on the contact.
-  const updatePersonFields = Object.keys(fresh).join(',');
-  const body = { etag: existing.etag, ...fresh };
-  People.People.updateContact(body, existing.resourceName, { updatePersonFields });
+  // Rafraîchit l'URL : auto-corrige une URL devenue obsolète après fusion.
+  const contactCol = getColNumberByName(schema.trackingColumn, data);
+  sheet.getRange(line, contactCol).setValue(contactUrlFromResourceName_(updated.resourceName));
 }
 
 function syncContactDelete(sheet, line, schema) {
   const data = sheet.getDataRange().getValues();
   validateSchema_(schema, data);
-  const url = getByName(schema.trackingColumn, line, data);
-  if (!url) throw new Error(`Aucun Google Contact sur la ligne ${line}.`);
 
   const contactCol = getColNumberByName(schema.trackingColumn, data);
-  People.People.deleteContact(contactResourceNameFromUrl_(url));
+  const found = findContactForLine_(line, data, schema);
+  // Succès doux : si aucun contact (déjà supprimé / fusionné), on vide juste la
+  // cellule sans erreur — le but « aucun contact ne doit exister » est atteint.
+  if (found) People.People.deleteContact(found.resourceName);
   sheet.getRange(line, contactCol).clearContent();
 }

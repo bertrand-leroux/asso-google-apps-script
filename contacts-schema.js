@@ -13,20 +13,22 @@ function contactLabel_(line, data) {
 function createAllUnexistingContacts() {
   const sheet = getSheet();
   const data = sheet.getDataRange().getValues();
+  // La résolution se fait désormais par email + nom (createContactsForLines_
+  // dédoublonne via un index). Plus besoin de filtrer sur trackingColumn vide :
+  // une URL périmée après fusion empêcherait la re-synchro de la ligne.
   const lines = eligibleLines(sheet, data, line =>
     getByName('Statut', line, data) === "Inscrit"
-    && getByName(CONTACT_SCHEMA.trackingColumn, line, data) === ''
   );
-  const { created, skipped, failed, errors } = createContactsForLines_(sheet, data, lines, CONTACT_SCHEMA);
-  const summary = [`${created} contact(s) créé(s).`];
+  const { created, updated, skipped, failed, errors } = createContactsForLines_(sheet, data, lines, CONTACT_SCHEMA);
+  const summary = [`${created} contact(s) créé(s).`, `${updated} mis à jour.`];
   if (skipped) summary.push(`${skipped} ligne(s) skipped.`);
   if (failed) summary.push(`${failed} échec(s).`);
   if (errors.length) summary.push('', ...errors);
   SpreadsheetApp.getUi().alert(summary.join('\n'));
 }
 
-// Upsert : si la ligne courante a déjà une URL vers Google Contact dans la
-// colonne tracking → update ; sinon → create. Skip si liste d'attente.
+// Upsert : résout le contact par email + nom (cf. createContactsForLines_).
+// S'il existe déjà → mise à jour ; sinon → création. Skip si liste d'attente.
 function upsertContact() {
   const sheet = getSheet();
   const line = getCursorLine(sheet);
@@ -45,22 +47,10 @@ function upsertContact() {
   }
 
   const who = contactLabel_(line, data);
-  const alreadyExists = getByName(CONTACT_SCHEMA.trackingColumn, line, data) !== '';
-
-  if (alreadyExists) {
-    try {
-      syncContactUpdate(sheet, line, CONTACT_SCHEMA);
-      ui.alert(`Contact ${who} mis à jour.`);
-    } catch (e) {
-      Logger.log(`update fail ${who}: ${e}`);
-      ui.alert(`Échec mise à jour ${who}: ${e.message}`);
-    }
-  } else {
-    const { created, errors } = syncContactCreate(sheet, line, CONTACT_SCHEMA);
-    ui.alert(created === 1
-      ? `Contact ${who} créé.`
-      : `Échec création ${who}.\n${errors.join('\n')}`);
-  }
+  const { created, updated, errors } = syncContactCreate(sheet, line, CONTACT_SCHEMA);
+  if (created === 1) ui.alert(`Contact ${who} créé.`);
+  else if (updated === 1) ui.alert(`Contact ${who} mis à jour.`);
+  else ui.alert(`Échec ${who}.\n${errors.join('\n')}`);
 }
 
 function withCursorLine_(label, action) {

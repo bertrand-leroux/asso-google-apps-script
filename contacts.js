@@ -132,6 +132,22 @@ function buildContactMemberships_(spec, groups, line, data) {
   return out;
 }
 
+// Fusionne les memberships au lieu de les écraser (read-modify-write). Une même
+// personne peut être gérée par plusieurs sections (Pilates, Yoga) partageant le
+// même contact Google. On ne remplace que les groupes gérés par CE schéma
+// (staticGroups + dynamicGroups.allowedValues = Object.values(groups)) et on
+// préserve tout le reste (autre section + groupes système comme myContacts).
+function mergeManagedMemberships_(person, existingMemberships, groups) {
+  if (!person.memberships) return person;
+  const managed = Object.values(groups).map(g => g.resourceName);
+  const preserved = (existingMemberships || []).filter(m => {
+    const rn = m.contactGroupMembership && m.contactGroupMembership.contactGroupResourceName;
+    return rn && managed.indexOf(rn) === -1;
+  });
+  person.memberships = preserved.concat(person.memberships);
+  return person;
+}
+
 function buildContactPerson_(line, data, schema, groups) {
   const person = {};
   if (schema.name) person.names = buildContactName_(schema.name, line, data);
@@ -230,13 +246,13 @@ function buildContactIndex_() {
   let pageToken;
   do {
     const res = People.People.Connections.list('people/me', {
-      personFields: 'names,emailAddresses,metadata',
+      personFields: 'names,emailAddresses,memberships,metadata',
       pageSize: 1000,
       pageToken,
     });
     (res.connections || []).forEach(p => {
       personIdentityKeys_(p).forEach(key => {
-        index[key] = { resourceName: p.resourceName, etag: p.etag };
+        index[key] = { resourceName: p.resourceName, etag: p.etag, memberships: p.memberships };
       });
     });
     pageToken = res.nextPageToken;
@@ -326,8 +342,9 @@ function createContactsForLines_(sheet, data, lines, schema) {
     });
   });
 
-  updates.forEach(({ line, contactPerson, resourceName, etag }) => {
+  updates.forEach(({ line, contactPerson, resourceName, etag, memberships }) => {
     try {
+      mergeManagedMemberships_(contactPerson, memberships, groups);
       const updated = updateResolvedContact_(resourceName, etag, contactPerson);
       sheet.getRange(line, contactCol).setValue(contactUrlFromResourceName_(updated.resourceName));
       result.updated++;
@@ -363,6 +380,7 @@ function syncContactUpdate(sheet, line, schema) {
 
   const groups = ensureContactGroups_(schema);
   const fresh = buildContactPerson_(line, data, schema, groups);
+  mergeManagedMemberships_(fresh, found.person.memberships, groups);
   const updated = updateResolvedContact_(found.resourceName, found.etag, fresh);
 
   // Rafraîchit l'URL : auto-corrige une URL devenue obsolète après fusion.

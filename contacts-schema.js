@@ -10,15 +10,24 @@ function contactLabel_(line, data) {
   return `ligne ${line} (${givenName} ${familyName})`;
 }
 
+// Conditions d'éligibilité d'une ligne à la création/màj d'un contact Google.
+// POINT D'EXTENSION par section : par défaut toutes les lignes sont éligibles
+// (eligibleLines ignore déjà les lignes masquées par filtre). Pour restreindre
+// selon une colonne propre à la section, renvoyer false ici, ex. :
+//   if (getByName('Statut', line, data) !== 'Inscrit') return false;
+//   if (getByName('Paiement', line, data) !== 'OK') return false;
+// (NB: getByName renvoie undefined si la colonne n'existe pas dans la feuille.)
+function isContactEligible_(line, data) {
+  return true;
+}
+
 function createAllUnexistingContacts() {
   const sheet = getSheet();
   const data = sheet.getDataRange().getValues();
-  // La résolution se fait désormais par email + nom (createContactsForLines_
-  // dédoublonne via un index). Plus besoin de filtrer sur trackingColumn vide :
-  // une URL périmée après fusion empêcherait la re-synchro de la ligne.
-  const lines = eligibleLines(sheet, data, line =>
-    getByName('Statut', line, data) === "Inscrit"
-  );
+  // La résolution se fait par email + nom (createContactsForLines_ dédoublonne
+  // via un index) : un contact déjà présent → mis à jour, sinon → créé.
+  // Contraintes d'éligibilité propres à la section : voir isContactEligible_.
+  const lines = eligibleLines(sheet, data, line => isContactEligible_(line, data));
   const { created, updated, skipped, failed, errors } = createContactsForLines_(sheet, data, lines, CONTACT_SCHEMA);
   const summary = [`${created} contact(s) créé(s).`, `${updated} mis à jour.`];
   if (skipped) summary.push(`${skipped} ligne(s) skipped.`);
@@ -28,7 +37,7 @@ function createAllUnexistingContacts() {
 }
 
 // Upsert : résout le contact par email + nom (cf. createContactsForLines_).
-// S'il existe déjà → mise à jour ; sinon → création. Skip si liste d'attente.
+// S'il existe déjà → mise à jour ; sinon → création. Skip si non éligible.
 function upsertContact() {
   const sheet = getSheet();
   const line = getCursorLine(sheet);
@@ -41,8 +50,9 @@ function upsertContact() {
     ui.alert(`Colonne "${CONTACT_SCHEMA.trackingColumn}" introuvable dans la feuille.`);
     return;
   }
-  if (getByName('Statut', line, data) === "Inscrit sur liste d'attente") {
-    ui.alert(`Ligne ${line}: inscrit sur liste d'attente, contact non créé.`);
+  // Contraintes d'éligibilité propres à la section : voir isContactEligible_.
+  if (!isContactEligible_(line, data)) {
+    ui.alert(`Ligne ${line}: non éligible à la création de contact.`);
     return;
   }
 

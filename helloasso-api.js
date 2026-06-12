@@ -18,10 +18,21 @@ const HELLOASSO_TOKEN_TTL_SAFETY_MS = 60 * 1000; // refresh 60s before expiry
 // CacheService → réduit drastiquement les stampedes (Cloudflare 1015).
 // -----------------------------------------------------------------------------
 
-// Formule G Sheets pour matcher un paiement Helloasso
-// Headers dans la feuille "Helloasso" : Date|Nom|Prénom|Email payeur|Montant (€)|Nom de l'enfant|Prénom de l'enfant
-// Headers dans la feuille lançant la formule suivante : Horodateur|Choix 1|Choix 2|Choix 3|Nom de l'enfant|Prénom de l'enfant|Sexe de l'enfant|Date de naissance|Classe à la rentrée|Nom Parent 1|Adresse e-mail|Téléphone mobile Parent 1|Nom Parent 2|Email Parent 2|Téléphone mobile Parent 2|Code postal|Commune|Adresse|Remarques|Saison 2025/2026|Règlement de la cotisation annuelle|Droit à l'image|Déclaration sur l'honneur|Consentement au règlement de l'Ecole du sport de Vertou|Assurances|Règlement Général sur la Protection des Données.||||Prénom de l'enfant Nom de l'enfant|Statut|Cours|Date certificat médical|Total cotisation|Total payé|Total Helloasso
-// =IFNA(IFNA(INDEX(FILTER(Helloasso!B:B;MINUSCULE(SUPPRESPACE(Helloasso!C:C))=MINUSCULE(SUPPRESPACE($E2));MINUSCULE(SUPPRESPACE(Helloasso!F:F))=MINUSCULE(SUPPRESPACE($F2)));1);RECHERCHEV(MINUSCULE($B2);Helloasso!D:E;2;FAUX));"")
+// Formule G Sheets pour matcher un paiement Helloasso (colonne "Total Helloasso").
+// Clé de matching = Nom enfant + Prénom enfant (unique au niveau enfant ; une clé
+// partagée par la fratrie — nom de famille, email payeur — produirait des doublons
+// dès qu'une famille a ≥2 inscrits). PAS de fallback email : il renvoyait la 1ʳᵉ
+// ligne du même email → un frère héritait du paiement de l'autre (faux positif).
+// Headers feuille "Helloasso" :  A Date | B Nom | C Prénom | D Email payeur | E Montant (€) | F Nom de l'enfant | G Prénom de l'enfant
+// Headers feuille "Demandes" (lance la formule) : A Horodateur | B Choix 1 | C Choix 2 | D Choix 3 | E Nom de l'enfant | F Prénom de l'enfant | … | Total cotisation | Total payé | Total Helloasso
+//
+// NORM = fonction nommée (Données → Fonctions nommées), arg `x`. Plie casse + espaces
+// + accents : MINUSCULE seul ne plie pas les diacritiques (léon≠leon, thébault≠thebault).
+//   =SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(MINUSCULE(SUPPRESPACE(x));"é";"e");"è";"e");"ê";"e");"ë";"e");"à";"a");"â";"a");"ä";"a");"ï";"i");"î";"i");"ô";"o");"ö";"o");"ù";"u");"û";"u");"ü";"u");"ç";"c");"ÿ";"y");"ñ";"n")
+//
+// =IFNA(INDEX(FILTER(Helloasso!E:E;NORM(Helloasso!F:F)=NORM($E2);NORM(Helloasso!G:G)=NORM($F2));1);"")
+// Variante si un enfant peut avoir plusieurs paiements à additionner :
+// =SUMPRODUCT((NORM(Helloasso!F:F)=NORM($E2))*(NORM(Helloasso!G:G)=NORM($F2));Helloasso!E:E)
 
 function getToken_() {
   const props = PropertiesService.getScriptProperties();

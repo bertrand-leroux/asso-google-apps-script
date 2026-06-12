@@ -19,6 +19,8 @@ const HELLOASSO_TOKEN_TTL_SAFETY_MS = 60 * 1000; // refresh 60s before expiry
 // -----------------------------------------------------------------------------
 
 // Formule G Sheets pour matcher un paiement Helloasso
+// Headers dans la feuille "Helloasso" : Date|Nom|Prénom|Email payeur|Montant (€)|Nom de l'enfant|Prénom de l'enfant
+// Headers dans la feuille lançant la formule suivante : Horodateur|Choix 1|Choix 2|Choix 3|Nom de l'enfant|Prénom de l'enfant|Sexe de l'enfant|Date de naissance|Classe à la rentrée|Nom Parent 1|Adresse e-mail|Téléphone mobile Parent 1|Nom Parent 2|Email Parent 2|Téléphone mobile Parent 2|Code postal|Commune|Adresse|Remarques|Saison 2025/2026|Règlement de la cotisation annuelle|Droit à l'image|Déclaration sur l'honneur|Consentement au règlement de l'Ecole du sport de Vertou|Assurances|Règlement Général sur la Protection des Données.||||Prénom de l'enfant Nom de l'enfant|Statut|Cours|Date certificat médical|Total cotisation|Total payé|Total Helloasso
 // =IFNA(IFNA(INDEX(FILTER(Helloasso!B:B;MINUSCULE(SUPPRESPACE(Helloasso!C:C))=MINUSCULE(SUPPRESPACE($E2));MINUSCULE(SUPPRESPACE(Helloasso!F:F))=MINUSCULE(SUPPRESPACE($F2)));1);RECHERCHEV(MINUSCULE($B2);Helloasso!D:E;2;FAUX));"")
 
 function getToken_() {
